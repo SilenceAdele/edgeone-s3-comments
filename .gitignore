@@ -1,0 +1,12 @@
+node_modules/
+.DS_Store
+*.log
+
+# Secrets: never commit, never print.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+secrets.conf
+imgup.conf

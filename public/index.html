@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>edgeone-s3-comments</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --brand: #409eff;
+        --ink: #2c3e50;
+        --muted: #5b6674;
+      }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: grid;
+        place-items: center;
+        background: #f7f9fc;
+        color: var(--ink);
+        font: 15px/1.7 -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', sans-serif;
+      }
+      main {
+        width: min(560px, calc(100vw - 32px));
+        padding: 28px 32px;
+        background: #fff;
+        border-radius: 12px;
+        box-shadow: 0 2px 20px rgba(44, 62, 80, 0.08);
+      }
+      h1 {
+        margin: 0 0 4px;
+        font-size: 20px;
+        color: var(--brand);
+      }
+      p.lead {
+        margin: 0 0 20px;
+        color: var(--muted);
+        font-size: 13px;
+      }
+      .state {
+        display: inline-block;
+        margin-bottom: 16px;
+        padding: 2px 10px;
+        border-radius: 999px;
+        font-size: 12px;
+        background: #eef2f7;
+        color: var(--muted);
+      }
+      .state.ok {
+        background: #e7f7ee;
+        color: #1f9d55;
+      }
+      .state.bad {
+        background: #fdecec;
+        color: #d64545;
+      }
+      dl {
+        display: grid;
+        grid-template-columns: 132px 1fr;
+        gap: 6px 12px;
+        margin: 0;
+        font-size: 13px;
+      }
+      dt {
+        color: var(--muted);
+      }
+      dd {
+        margin: 0;
+        word-break: break-all;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 12px;
+      }
+      .warn {
+        margin-top: 18px;
+        padding: 10px 12px;
+        border-left: 3px solid #f0a020;
+        background: #fff8ec;
+        border-radius: 4px;
+        font-size: 12px;
+        color: #8a5a00;
+      }
+      .warn:empty {
+        display: none;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>edgeone-s3-comments</h1>
+      <p class="lead">自建评论服务 · 评论数据存放在 S3 兼容对象存储</p>
+      <div id="state" class="state">检查中…</div>
+      <dl id="fields"></dl>
+      <div id="warn" class="warn"></div>
+    </main>
+
+    <script>
+      const fields = document.getElementById('fields');
+      const state = document.getElementById('state');
+      const warn = document.getElementById('warn');
+
+      const row = (label, value) => {
+        const dt = document.createElement('dt');
+        dt.textContent = label;
+        const dd = document.createElement('dd');
+        dd.textContent = value ?? '—';
+        fields.append(dt, dd);
+      };
+
+      fetch('/api/health')
+        .then((res) => res.json())
+        .then((h) => {
+          state.textContent = h.ok ? '运行正常' : '需要配置';
+          state.className = 'state ' + (h.ok ? 'ok' : 'bad');
+          row('bucket', h.bucket);
+          row('endpoint', h.endpoint);
+          row('prefix', h.prefix);
+          row('S3 连通', h.s3Ready ? 'ok' : h.s3Error || 'failed');
+          row('每页条数', h.pageSize);
+          row('限流', `${h.rate.max} 条 / ${Math.round(h.rate.windowMs / 60000)} 分钟`);
+          row('允许来源', (h.origins || []).join(', ') || '不限');
+          row('邮件通知', h.mail.enabled ? `${h.mail.provider} · ${h.mail.owner}` : '未开启');
+          row('删除接口', h.deleteEndpoint ? '已开启' : '未配置 COMMENT_TOKEN');
+          if (h.missing?.length) row('缺少变量', h.missing.join(', '));
+          warn.textContent = (h.warnings || []).join('；');
+        })
+        .catch((e) => {
+          state.textContent = '无法访问 /api/health';
+          state.className = 'state bad';
+          warn.textContent = String(e);
+        });
+    </script>
+  </body>
+</html>

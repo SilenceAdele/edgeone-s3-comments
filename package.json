@@ -1,0 +1,14 @@
+{
+  "name": "edgeone-s3-comments",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Self-hosted comment system on EdgeOne Pages with comment data stored in an S3-compatible bucket",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "node dev-server.mjs",
+    "test": "node test-local.mjs"
+  }
+}
