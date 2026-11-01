@@ -136,43 +136,74 @@ export interface OutgoingMail {
   text: string;
 }
 
-async function sendViaResend(cfg: MailConfig, msg: OutgoingMail): Promise<void> {
-  // The comment request waits on this call, so the budget stays well under the
-  // platform's own request timeout even with two sends. `AbortSignal.timeout()`
-  // is not implemented on EdgeOne's runtime, hence the manual controller.
+/**
+ * EdgeOne's egress to api.resend.com answers its own 504 page now and then
+ * (~4s, HTML instead of JSON), and a second attempt usually gets through, so
+ * one retry is worth the extra latency. A 4xx is a real rejection: retrying it
+ * only wastes the caller's time.
+ */
+const MAIL_TIMEOUT_MS = 4_000;
+const MAIL_ATTEMPTS = 2;
+const MAIL_RETRY_DELAY_MS = 400;
+
+async function postMail(cfg: MailConfig, msg: OutgoingMail): Promise<Response> {
+  // `AbortSignal.timeout()` is not implemented on EdgeOne's runtime, hence the
+  // manual controller.
   const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), 5_000);
-  const startedAt = Date.now();
-
-  const res = await fetch('https://api.resend.com/emails', {
-    method: 'POST',
-    headers: {
-      authorization: `Bearer ${cfg.apiKey}`,
-      'content-type': 'application/json',
-    },
-    body: JSON.stringify({
-      from: cfg.from,
-      to: [msg.to],
-      subject: msg.subject,
-      html: msg.html,
-      text: msg.text,
-      ...(cfg.replyTo ? { reply_to: cfg.replyTo } : {}),
-    }),
-    signal: ctrl.signal,
-  }).finally(() => clearTimeout(timer));
-
-  if (!res.ok) {
-    // The snippet shows who actually answered (Resend's JSON vs an upstream
-    // proxy's HTML) and how long it took. This string reaches a public health
-    // endpoint, so every address in it is masked.
-    const snippet = ((await res.text().catch(() => '')) || '').slice(0, 160);
-    throw new Error(
-      `mail provider responded ${res.status} in ${Date.now() - startedAt}ms: ${snippet.replace(
-        /[^\s"',<>[\]]+@[^\s"',<>[\]]+/g,
-        '***',
-      )}`,
-    );
+  const timer = setTimeout(() => ctrl.abort(), MAIL_TIMEOUT_MS);
+  try {
+    return await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${cfg.apiKey}`,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        from: cfg.from,
+        to: [msg.to],
+        subject: msg.subject,
+        html: msg.html,
+        text: msg.text,
+        ...(cfg.replyTo ? { reply_to: cfg.replyTo } : {}),
+      }),
+      signal: ctrl.signal,
+    });
+  } finally {
+    clearTimeout(timer);
   }
+}
+
+async function sendViaResend(cfg: MailConfig, msg: OutgoingMail): Promise<void> {
+  // The comment request waits on this call, so the total budget stays well
+  // under the platform's own request timeout even with two sends.
+  let failure = 'mail was never attempted';
+
+  for (let attempt = 1; attempt <= MAIL_ATTEMPTS; attempt++) {
+    const startedAt = Date.now();
+    let res: Response | null = null;
+    let thrown = '';
+    try {
+      res = await postMail(cfg, msg);
+    } catch (e) {
+      thrown = `${(e as Error).name || 'Error'}: ${(e as Error).message || String(e)}`;
+    }
+    if (res?.ok) return;
+
+    // The snippet shows who actually answered — Resend's JSON or an upstream
+    // proxy's HTML. It ends up on a public health endpoint, so mask addresses.
+    const body = res ? ((await res.text().catch(() => '')) || '').slice(0, 160) : '';
+    failure = res
+      ? `mail provider responded ${res.status} in ${Date.now() - startedAt}ms: ${body.replace(
+          /[^\s"',<>[\]]+@[^\s"',<>[\]]+/g,
+          '***',
+        )}`
+      : `mail fetch failed in ${Date.now() - startedAt}ms: ${thrown}`;
+
+    if ((res && res.status < 500) || attempt === MAIL_ATTEMPTS) break;
+    await new Promise((resolve) => setTimeout(resolve, MAIL_RETRY_DELAY_MS));
+  }
+
+  throw new Error(failure);
 }
 
 export async function sendMail(cfg: MailConfig, msg: OutgoingMail): Promise<void> {
