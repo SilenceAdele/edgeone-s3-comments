@@ -142,6 +142,7 @@ async function sendViaResend(cfg: MailConfig, msg: OutgoingMail): Promise<void> 
   // is not implemented on EdgeOne's runtime, hence the manual controller.
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), 5_000);
+  const startedAt = Date.now();
 
   const res = await fetch('https://api.resend.com/emails', {
     method: 'POST',
@@ -161,8 +162,16 @@ async function sendViaResend(cfg: MailConfig, msg: OutgoingMail): Promise<void> 
   }).finally(() => clearTimeout(timer));
 
   if (!res.ok) {
-    // Status only: the body can echo request fields back into logs.
-    throw new Error(`mail provider responded ${res.status}`);
+    // The snippet shows who actually answered (Resend's JSON vs an upstream
+    // proxy's HTML) and how long it took. This string reaches a public health
+    // endpoint, so every address in it is masked.
+    const snippet = ((await res.text().catch(() => '')) || '').slice(0, 160);
+    throw new Error(
+      `mail provider responded ${res.status} in ${Date.now() - startedAt}ms: ${snippet.replace(
+        /[^\s"',<>[\]]+@[^\s"',<>[\]]+/g,
+        '***',
+      )}`,
+    );
   }
 }
 
