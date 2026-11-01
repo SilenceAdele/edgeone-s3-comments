@@ -363,10 +363,10 @@ section('replying to your own comment');
   eq(selfReply.status, 201, 'reply from the same address accepted');
 
   const added = mails.slice(before);
-  eq(added.length, 3, 'owner hears about both and the author hears about the reply');
+  eq(added.length, 2, 'a self-reply sends the two owner mails and nothing else');
   ok(
-    added.some((m) => m.to[0] === 'self@blog.test'),
-    'the same-address reply still notifies the author',
+    added.every((m) => m.to[0] === 'owner@blog.test'),
+    'nobody is mailed about their own reply',
   );
 }
 

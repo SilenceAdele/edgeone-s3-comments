@@ -364,9 +364,9 @@ export async function notifyNewComment(opts: {
     const parentEmail = (parent.email || '').trim();
     if (!parentEmail) skipped.push('reply: parent left no email');
     else if (!parent.notify) skipped.push('reply: parent opted out of replies');
-    else {
-      // No same-author exemption: someone following their own thread still
-      // wants the ping, and the per-address window below caps the noise.
+    else if (parentEmail.toLowerCase() === (comment.email || '').trim().toLowerCase()) {
+      skipped.push('reply: same author');
+    } else {
       const hash = await emailHash(parentEmail);
       try {
         if (await isOptedOut(store, hash)) skipped.push('reply: unsubscribed');
