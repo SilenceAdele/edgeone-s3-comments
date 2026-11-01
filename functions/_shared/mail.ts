@@ -137,6 +137,12 @@ export interface OutgoingMail {
 }
 
 async function sendViaResend(cfg: MailConfig, msg: OutgoingMail): Promise<void> {
+  // The comment request waits on this call, so the budget stays well under the
+  // platform's own request timeout even with two sends. `AbortSignal.timeout()`
+  // is not implemented on EdgeOne's runtime, hence the manual controller.
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 5_000);
+
   const res = await fetch('https://api.resend.com/emails', {
     method: 'POST',
     headers: {
@@ -151,10 +157,8 @@ async function sendViaResend(cfg: MailConfig, msg: OutgoingMail): Promise<void> 
       text: msg.text,
       ...(cfg.replyTo ? { reply_to: cfg.replyTo } : {}),
     }),
-    // The comment request now waits on this call, so the budget has to stay
-    // well under the platform's own request timeout even with two sends.
-    signal: AbortSignal.timeout(5_000),
-  });
+    signal: ctrl.signal,
+  }).finally(() => clearTimeout(timer));
 
   if (!res.ok) {
     // Status only: the body can echo request fields back into logs.
