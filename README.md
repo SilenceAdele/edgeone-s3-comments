@@ -15,7 +15,7 @@ browser ──> EdgeOne Pages Edge Function ──> S3-compatible bucket
                     └──> mail provider (HTTP API, best effort)
 ```
 
-The function is `functions/[[...path]].ts` and handles every route. `public/` only holds `robots.txt` (the status page lives in the function so it can be token-gated).
+The handler is `functions/[[...path]].ts` and serves every route. `functions/index.ts` re-exports it because EdgeOne Pages maps only `index.ts` to `/` — a catch-all does not cover the root, and static files win over functions. `public/` only holds `robots.txt` (the status page lives in the function so it can be token-gated).
 
 ## Requirements
 

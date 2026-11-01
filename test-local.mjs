@@ -257,6 +257,26 @@ section('status page');
   ok(!closed.text.includes('name="token"'), 'the disabled page offers no token field');
 }
 
+section('root entry');
+{
+  // The platform routes "/" to functions/index.ts only; keep that file wired up.
+  const { onRequest: rootEntry } = await import('./functions/index.ts');
+  eq(typeof rootEntry, 'function', 'functions/index.ts exports the handler');
+
+  const response = await rootEntry({
+    request: new Request('https://comments.test/', {
+      method: 'GET',
+      headers: { 'x-forwarded-for': '198.51.100.7' },
+    }),
+    params: {},
+    env: ENV,
+    waitUntil: () => {},
+  });
+  const text = await response.text();
+  eq(response.status, 401, 'the root path hits the same token gate');
+  ok(text.includes('name="token"'), 'the root entry renders the token form');
+}
+
 section('input guards');
 {
   const badOrigin = await call('POST', '/api/comment', {
