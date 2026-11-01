@@ -7,7 +7,6 @@
  *   GET    /api/count?p=/posts/foo/      comment count              -> 200
  *   POST   /api/comment                  post a comment or reply    -> 201
  *   DELETE /api/comment?p=&id=           admin delete (token)       -> 200
- *   GET    /api/unsubscribe?e=&t=        one-click opt-out          -> 200
  *   GET    /api/health                   config sanity check        -> 200
  *
  * All credentials come from environment variables. Nothing is hardcoded and
@@ -31,14 +30,11 @@ import {
   type PublicReply,
 } from './_shared/comments.ts';
 import {
-  isOptedOut,
-  markOptOut,
   maskEmail,
   notifyNewComment,
   readMailConfig,
   readMailNotice,
   recordMailNotice,
-  unsubscribeToken,
   type MailConfig,
 } from './_shared/mail.ts';
 import { readS3Config, s3Request, type S3Config } from './_shared/s3.ts';
@@ -125,11 +121,6 @@ async function handle(ctx: FnContext): Promise<Response> {
   if (path === '/api/count') {
     if (method !== 'GET' && method !== 'HEAD') return methodNotAllowed(cors);
     return handleCount(ctx, cfg, url, cors);
-  }
-
-  if (path === '/api/unsubscribe') {
-    if (method !== 'GET') return methodNotAllowed(cors);
-    return handleUnsubscribe(cfg, url);
   }
 
   return json({ error: 'Not found' }, 404, cors);
@@ -294,22 +285,6 @@ async function handleDelete(
   } catch (e) {
     return fail(e, cors);
   }
-}
-
-async function handleUnsubscribe(cfg: ServiceConfig, url: URL): Promise<Response> {
-  if (!cfg.mail) {
-    return html('通知已停用', '本站目前没有开启邮件通知，无需退订。', 410);
-  }
-
-  const hash = url.searchParams.get('e') || '';
-  const token = url.searchParams.get('t') || '';
-  const expected = await unsubscribeToken(cfg.mail, hash);
-  if (!hash || !safeEqual(token, expected)) {
-    return html('链接无效', '这个退订链接无效或已被修改，请从原始邮件中重新打开。', 400);
-  }
-
-  if (!(await isOptedOut(cfg, hash))) await markOptOut(cfg, hash);
-  return html('已退订', '该邮箱不会再收到评论回复通知。如需恢复，请在评论时重新勾选通知。', 200);
 }
 
 // ================= config =================
@@ -539,23 +514,3 @@ function json(body: unknown, status: number, headers: Record<string, string> = {
   });
 }
 
-function html(title: string, message: string, status: number): Response {
-  const body = `<!doctype html>
-<html lang="zh-CN">
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>${title}</title>
-<style>
-  body{margin:0;min-height:100vh;display:grid;place-items:center;background:#f7f9fc;color:#2c3e50;
-       font:15px/1.7 -apple-system,BlinkMacSystemFont,'PingFang SC','Microsoft YaHei',sans-serif}
-  main{max-width:420px;padding:32px;text-align:center;background:#fff;border-radius:10px;
-       box-shadow:0 2px 16px rgba(44,62,80,.08)}
-  h1{margin:0 0 12px;font-size:18px;color:#409eff}
-  p{margin:0;color:#5b6674}
-</style>
-<main><h1>${title}</h1><p>${message}</p></main>`;
-  return new Response(body, {
-    status,
-    headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' },
-  });
-}

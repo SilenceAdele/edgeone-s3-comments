@@ -144,8 +144,6 @@ const ENV = {
   MAIL_API_KEY: 're_test_key',
   MAIL_FROM: 'no-reply@blog.test',
   MAIL_TO: 'owner@blog.test',
-  MAIL_SALT: 'mail-salt-for-test',
-  COMMENT_API_URL: 'https://comments.test',
   SITE_URL: 'https://blog.test',
   SITE_NAME: 'Test Blog',
 };
@@ -305,17 +303,7 @@ section('email notifications');
   ok(mails[mailBase + 2].text.includes('Glad you liked it.'), 'reply mail carries the reply text');
   ok(mails[mailBase].text.includes('reader@blog.test'), 'owner mail carries the commenter address');
   ok(!mails[mailBase + 2].text.includes('owner@blog.test'), 'reply mail leaks no other address');
-
-  const link = /https:\/\/comments\.test\/api\/unsubscribe\?e=([0-9a-f]+)&t=([0-9a-f]+)/.exec(
-    mails[mailBase + 2].text,
-  );
-  ok(!!link, 'reply mail carries a signed unsubscribe link');
-
-  const tampered = await call('GET', `/api/unsubscribe?e=${link[1]}&t=${link[2].slice(0, -1)}0`);
-  eq(tampered.status, 400, 'tampered unsubscribe token rejected');
-
-  const unsub = await call('GET', `/api/unsubscribe?e=${link[1]}&t=${link[2]}`);
-  eq(unsub.status, 200, 'valid unsubscribe link works');
+  ok(!mails[mailBase + 2].text.includes('unsubscribe'), 'reply mail offers no unsubscribe link');
 
   const before = mails.length;
   const third = await call('POST', '/api/comment', {
@@ -329,7 +317,7 @@ section('email notifications');
     ip: '198.51.100.20',
   });
   eq(third.status, 201, 'third comment accepted');
-  eq(mails.length, before + 1, 'only the owner mail is sent after opt-out');
+  eq(mails.length, before + 1, 'the second reply to the same address is throttled away');
   eq(mails[mails.length - 1].to[0], 'owner@blog.test', 'the skipped one was the reader mail');
 }
 

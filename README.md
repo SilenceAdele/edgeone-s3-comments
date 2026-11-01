@@ -4,7 +4,7 @@
 
 - 无数据库、无第三方评论 SaaS，数据在自己桶里
 - 每个评论一个对象，只写不改，天然幂等
-- 邮件通知：站长收新评论，被回复者收回复提醒（可一键退订）
+- 邮件通知：站长收新评论，被回复者收回复提醒
 - 前端零依赖，`Comments.vue` 直接对接（见下方接口）
 
 ## 接口
@@ -15,7 +15,6 @@
 | `GET /api/count?p=/posts/foo/` | 评论总数 | |
 | `POST /api/comment` | 发评论 / 回复 | `text/plain` 或 JSON 或表单皆可，见下 |
 | `DELETE /api/comment?p=&id=` | 管理员删除 | 需要 `x-comment-token` 头或 `?token=`，连带删除该评论的直接回复 |
-| `GET /api/unsubscribe?e=&t=` | 邮件退订 | 链接由服务端签名，无需登录 |
 | `GET /api/health` | 配置自检 | 只返回变量名与状态，站长邮箱打码 |
 
 `POST /api/comment` 字段：
@@ -42,7 +41,6 @@
 comments/v1/pages/<pageHash>/<id>.json      评论本体（含邮箱，桶必须私有）
 comments/v1/rl/<ipHash>/<ts>.marker         每 IP 发帖限流
 comments/v1/dup/<contentHash>/<minute>.marker 一分钟内重复内容
-comments/v1/mail/optout/<emailHash>.json    退订标记
 comments/v1/mail/rl/<emailHash>/<ts>.marker 同一邮箱 10 分钟内只发一封
 ```
 
@@ -72,8 +70,6 @@ comments/v1/mail/rl/<emailHash>/<ts>.marker 同一邮箱 10 分钟内只发一�
 | `MAIL_FROM` | 邮件必填 | 已验签的发件地址 |
 | `MAIL_TO` | 邮件必填 | 站长收件地址（`/api/health` 里显示为 `***@domain`） |
 | `MAIL_REPLY_TO` | 否 | 回复邮件时使用的地址 |
-| `MAIL_SALT` | 邮件必填 | 签退订链接用，和 `IP_SALT` 分开 |
-| `COMMENT_API_URL` | 邮件必填 | 本服务公网地址，用于生成退订链接 |
 | `SITE_URL` / `SITE_NAME` | 否 | 邮件里的站点链接和署名 |
 
 Edge Functions 没有 TCP，发不了 SMTP，所以邮件走 HTTP 接口；要换供应商在 `functions/_shared/mail.ts` 的 `sendMail` 加一个分支即可。
@@ -92,7 +88,7 @@ Edge Functions 没有 TCP，发不了 SMTP，所以邮件走 HTTP 接口；要�
 - 每 IP 10 分钟最多 5 条（只存哈希）
 - 同页面同内容 1 分钟内视为重复（跨分钟边界也检查）
 - 来源白名单，非白名单站点连 CORS 头都拿不到
-- 邮件：同一收件邮箱 10 分钟最多一封；退订后不再发送
+- 邮件：同一收件邮箱 10 分钟最多一封
 
 ## 本地开发
 

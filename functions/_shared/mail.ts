@@ -10,7 +10,7 @@
  * failure must never turn into a request failure.
  */
 
-import { hmacHex, sha256Hex } from './sigv4.ts';
+import { sha256Hex } from './sigv4.ts';
 import { s3Delete, s3GetJson, s3ListKeys, s3PutEmpty, s3PutJson, type S3Config } from './s3.ts';
 import type { CommentRecord, CommentStoreConfig } from './comments.ts';
 
@@ -21,13 +21,9 @@ export interface MailConfig {
   from: string;
   to: string;
   replyTo: string;
-  /** Signs unsubscribe links. Independent from the IP salt. */
-  salt: string;
   /** Blog origin used for "view comment" links. */
   siteUrl: string;
   siteName: string;
-  /** This service's origin, used for unsubscribe links. */
-  apiUrl: string;
 }
 
 export interface MailRead {
@@ -51,8 +47,6 @@ export function readMailConfig(env: Record<string, string | undefined>): MailRea
     ['MAIL_API_KEY', env.MAIL_API_KEY],
     ['MAIL_FROM', env.MAIL_FROM],
     ['MAIL_TO', env.MAIL_TO],
-    ['MAIL_SALT', env.MAIL_SALT],
-    ['COMMENT_API_URL', env.COMMENT_API_URL],
   ];
   const missing = pairs.filter(([, v]) => !v).map(([k]) => k);
 
@@ -72,36 +66,18 @@ export function readMailConfig(env: Record<string, string | undefined>): MailRea
       from: env.MAIL_FROM!,
       to: env.MAIL_TO!,
       replyTo: env.MAIL_REPLY_TO || '',
-      salt: env.MAIL_SALT!,
       siteUrl: (env.SITE_URL || 'https://blog.zhiyuanzhou.top').replace(/\/+$/, ''),
       siteName: env.SITE_NAME || "zhiyuan.zhou's Blog",
-      apiUrl: env.COMMENT_API_URL!.replace(/\/+$/, ''),
     },
     missing: [],
     warnings,
   };
 }
 
-// ---------- opt-out ----------
+// ---------- recipient keys and throttles ----------
 
 export async function emailHash(email: string): Promise<string> {
   return (await sha256Hex(email.trim().toLowerCase())).slice(0, 32);
-}
-
-export async function unsubscribeToken(mail: MailConfig, hash: string): Promise<string> {
-  return hmacHex(mail.salt, `unsub:${hash}`);
-}
-
-export function unsubscribeUrl(mail: MailConfig, hash: string, token: string): string {
-  return `${mail.apiUrl}/api/unsubscribe?e=${hash}&t=${token}`;
-}
-
-export async function isOptedOut(store: CommentStoreConfig, hash: string): Promise<boolean> {
-  return (await s3GetJson(store.s3, `${store.prefix}/mail/optout/${hash}.json`)) !== null;
-}
-
-export async function markOptOut(store: CommentStoreConfig, hash: string): Promise<void> {
-  await s3PutJson(store.s3, `${store.prefix}/mail/optout/${hash}.json`, { at: Date.now() });
 }
 
 /** One notification per address per 10 minutes, whatever the page. */
@@ -305,8 +281,6 @@ export function replyMail(
   mail: MailConfig,
   reply: CommentRecord,
   parent: CommentRecord,
-  hash: string,
-  token: string,
 ): OutgoingMail {
   const url = pageUrl(mail, reply.page);
   const { html, text } = renderShell({
@@ -316,7 +290,7 @@ export function replyMail(
       `回复内容：${reply.content}`,
     ],
     cta: { label: '查看并回复', url },
-    footer: `你收到这封邮件是因为在本站评论时填写了邮箱。不想再收到通知：${unsubscribeUrl(mail, hash, token)}`,
+    footer: '你收到这封邮件是因为在本站评论时填写了邮箱。',
   });
 
   return {
@@ -369,11 +343,9 @@ export async function notifyNewComment(opts: {
     } else {
       const hash = await emailHash(parentEmail);
       try {
-        if (await isOptedOut(store, hash)) skipped.push('reply: unsubscribed');
-        else if (!(await mailRateOk(store, hash, now))) skipped.push('reply: rate limited');
+        if (!(await mailRateOk(store, hash, now))) skipped.push('reply: rate limited');
         else {
-          const token = await unsubscribeToken(mail, hash);
-          await sendMail(mail, replyMail(mail, comment, parent, hash, token));
+          await sendMail(mail, replyMail(mail, comment, parent));
           await markMailRate(store, hash, now);
           replySent = true;
         }
