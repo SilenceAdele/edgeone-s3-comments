@@ -1,113 +1,187 @@
 # edgeone-s3-comments
 
-自建评论服务：部署在 **EdgeOne Pages Functions**，评论数据以**不可变 JSON 对象**的形式存放在 **S3 兼容对象存储**里，配套邮件通知。
+A self-hosted comment system that runs as an **EdgeOne Pages Edge Function** and stores every comment as an **immutable JSON object** in an **S3-compatible bucket**. Optional email notifications on top.
 
-- 无数据库、无第三方评论 SaaS，数据在自己桶里
-- 每个评论一个对象，只写不改，天然幂等
-- 邮件通知：站长收新评论，被回复者收回复提醒
-- 前端零依赖，`Comments.vue` 直接对接（见下方接口）
+- No database, no third-party comment SaaS — the data stays in your own bucket
+- One object per comment, write-once, so no read-modify-write races
+- Email: the site owner is notified of every comment, and a reply also notifies the comment's author
+- Zero frontend dependencies; a single `Comments.vue` talks to the JSON API
 
-## 接口
+## How it works
 
-| 方法与路径 | 作用 | 说明 |
+```
+browser ──> EdgeOne Pages Edge Function ──> S3-compatible bucket
+                    │
+                    └──> mail provider (HTTP API, best effort)
+```
+
+The function is `functions/[[...path]].ts` and handles every route. `public/` only holds `robots.txt` (the status page lives in the function so it can be token-gated).
+
+## Requirements
+
+- Node.js >= 22 (the function is plain `.ts`, run through Node's built-in type stripping — no build step)
+- An EdgeOne Pages project
+- A private S3-compatible bucket + an access key scoped to one prefix
+
+## Configuration
+
+All configuration comes from environment variables. Nothing is baked into the code, and no secret is ever logged or returned by `/api/health`.
+
+Locally, copy `.env.example` to `.env` and fill it in; `npm run dev` reads that file.
+
+In production, set the same names in **EdgeOne Pages console → Project → Settings → Environment Variables**, then redeploy.
+
+### S3 storage (required)
+
+| Variable | Required | Default | What to put there |
+| --- | --- | --- | --- |
+| `AWS_ACCESS_KEY_ID` | yes | — | Access key ID scoped to this bucket/prefix |
+| `AWS_SECRET_ACCESS_KEY` | yes | — | The matching secret (shown once at creation) |
+| `S3_BUCKET` | yes | — | Bucket name, e.g. `blog-comments`. Keep it private. |
+| `S3_ENDPOINT` | yes | — | Hostname only, **no scheme**, e.g. `s3.cstcloud.cn` or `xxx.s3.cn-north-1.amazonaws.com.cn` |
+| `S3_REGION` | no | `cn-north-1` | The region your provider reports (used for SigV4 signing) |
+| `UA_PREFIX` | no | `S3Drive` | App name the access key is bound to; some gateways reject a mismatched `User-Agent` |
+
+**Where to get them**
+
+1. `S3_BUCKET` — open your object-storage console, create a bucket, copy its name. Do not enable public read: comment objects contain visitor emails.
+2. `S3_ENDPOINT` / `S3_REGION` — shown on the bucket's "overview / connection" panel. Take the endpoint host and strip `https://`; if you can open the bucket with an S3 client using only the host, that is the value.
+3. `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` — in the console's access-key / app page, create a key bound to this bucket. If the console asks for permissions, grant list/get/put/delete **only on the `COMMENT_PREFIX` path** (plus `ListBucket` with that prefix). Copy the secret immediately; it is not shown again.
+4. `UA_PREFIX` — only relevant when your gateway binds a key to an application name (CSTCloud's S3 behind S3Drive does; it requires `User-Agent: <AppName> ...`). Use the exact app name. Plain AWS S3, Cloudflare R2 and MinIO do not check this, so the default is fine.
+
+The gateway check is the usual cause of `403` from S3 — `/api/health` will say `S3 403` and hint at `UA_PREFIX`.
+
+### Comment behaviour (recommended)
+
+| Variable | Required | Default | What to put there |
+| --- | --- | --- | --- |
+| `COMMENT_PREFIX` | no | `comments/v1` | Root key prefix. Scope the access key to this prefix. |
+| `IP_SALT` | recommended | fixed fallback | Random string used to hash visitor IPs. Generate with `openssl rand -hex 16`. Changing it resets all rate-limit state. |
+| `COMMENT_ORIGINS` | recommended | empty (any site) | Comma-separated allowed origins, no trailing slash, e.g. `https://blog.example.com`. An empty list means any site can post. |
+| `COMMENT_TOKEN` | recommended | empty (disabled) | Admin token for `DELETE /api/comment` **and** the `/?token=` status page. Generate with `openssl rand -hex 24`. When unset, the delete endpoint returns 404 and the status page is closed. |
+| `COMMENT_PAGE_SIZE` | no | `20` | Comments per page, clamped to 1–50 |
+| `COMMENT_RATE_MAX` | no | `5` | Posts per IP per 10 minutes, clamped to 1–50 |
+
+`IP_SALT` is never echoed anywhere; it only turns an IP into `sha256(IP_SALT:ip)[0..16]`.
+
+### Email notifications (optional)
+
+Leave `MAIL_PROVIDER` empty to disable them entirely. Edge Functions have no TCP, so SMTP is not an option; mail goes out over an HTTP API.
+
+| Variable | Required | Default | What to put there |
+| --- | --- | --- | --- |
+| `MAIL_PROVIDER` | no | empty (off) | `resend` enables it; `off`/`none`/empty disables it |
+| `MAIL_API_KEY` | yes when enabled | — | Resend API key |
+| `MAIL_FROM` | yes when enabled | — | A sender on a domain you verified in Resend, e.g. `comments@example.com` |
+| `MAIL_TO` | yes when enabled | — | Owner inbox for new-comment notifications. Masked as `***@example.com` on `/api/health`. |
+| `MAIL_REPLY_TO` | no | empty | Reply-To header on outgoing mail |
+| `SITE_URL` | no | blog default | Blog origin used in email links (no trailing slash) |
+| `SITE_NAME` | no | blog default | Blog name shown in the email signature |
+
+**Where to get them**
+
+1. Create a free Resend account, then **Domains → add your domain** and publish the SPF/DKIM DNS records it shows. Only verified domains can send.
+2. **API Keys → Create**, scope *Sending access*. The key starts with `re_` and is shown once.
+3. `MAIL_FROM` must use that verified domain; a local-part like `comments@` is fine.
+4. Set `MAIL_TO` to the inbox you actually read.
+
+Delivery is best effort: a mail failure never turns into an API error, and the comment is already saved. `/api/health` exposes `mail.last`, a small status record explaining the most recent send or skip (`reply: same author`, `reply: rate limited`, `reply: parent left no email`, …) without any address.
+
+## API
+
+| Method & path | Purpose | Notes |
 | --- | --- | --- |
-| `GET /api/comments?p=/posts/foo/&limit=20&before=<id>` | 取评论 | 顶层评论按时间倒序，回复按时间正序 |
-| `GET /api/count?p=/posts/foo/` | 评论总数 | |
-| `POST /api/comment` | 发评论 / 回复 | `text/plain` 或 JSON 或表单皆可，见下 |
-| `DELETE /api/comment?p=&id=` | 管理员删除 | 需要 `x-comment-token` 头或 `?token=`，连带删除该评论的直接回复 |
-| `GET /?token=` | 状态页 | 和删除接口用同一个 `COMMENT_TOKEN`；未配置时整页返回 404 |
-| `GET /api/health` | 配置自检 | 只返回变量名与状态，站长邮箱打码 |
+| `GET /api/comments?p=/posts/foo/&limit=20&before=<id>` | List a page's comments | Top-level comments newest-first, replies oldest-first |
+| `GET /api/count?p=/posts/foo/` | Comment count | |
+| `POST /api/comment` | Create a comment or reply | Accepts `text/plain`, JSON or form data |
+| `DELETE /api/comment?p=&id=` | Admin delete | `x-comment-token` header or `?token=`; also deletes the comment's direct replies |
+| `GET /?token=` | Status page | Same token as delete; 404 when `COMMENT_TOKEN` is unset |
+| `GET /api/health` | Config self-check | Names and statuses only; owner address masked |
 
-`POST /api/comment` 字段：
+`POST /api/comment` body:
 
 ```jsonc
 {
-  "p": "/posts/foo/",      // 文章路径（也接受 path）
-  "name": "昵称",          // 1-32 字
-  "email": "",             // 可选，仅用于回复通知，永不返回给前端
-  "website": "",           // 可选
-  "content": "正文",       // 必填，最多 4000 字
-  "parentId": null,        // 回复时填被回复评论的 id
-  "notify": true,          // 是否接收回复通知
-  "nickname2": "",         // 蜜罐字段，必须为空
-  "t0": 1730000000000      // 表单渲染时间，早于 2 秒或超过 1 小时会被拒
+  "p": "/posts/foo/",      // page path (also accepts "path")
+  "name": "Alice",         // 1-32 chars
+  "email": "",             // optional, reply notifications only, never returned to clients
+  "website": "",           // optional
+  "content": "Hi",         // required, up to 4000 chars
+  "parentId": null,        // id of the comment being replied to
+  "notify": true,          // whether to receive reply notifications
+  "nickname2": "",         // honeypot, must stay empty
+  "t0": 1730000000000      // form render time; rejected if <2 s or >1 h old
 }
 ```
 
-## 存储结构
+A comment object stores the author's `email`; the public API never returns it, and the bucket must stay private.
 
-所有对象都在 `COMMENT_PREFIX`（默认 `comments/v1`）之下，这样一把 AccessKey 只需要这一个前缀的权限：
+## Storage layout
+
+Everything lives under `COMMENT_PREFIX` so one access key can cover the whole service:
 
 ```text
-comments/v1/pages/<pageHash>/<id>.json      评论本体（含邮箱，桶必须私有）
-comments/v1/rl/<ipHash>/<ts>.marker         每 IP 发帖限流
-comments/v1/dup/<authorContentHash>/<minute>.marker 同一人一分钟内重复内容
-comments/v1/mail/rl/<emailHash>/<ts>.marker 同一邮箱 10 分钟内只发一封
+comments/v1/pages/<pageHash>/<id>.json         comment body (contains email; keep the bucket private)
+comments/v1/rl/<ipHash>/<ts>.marker            per-IP posting rate limit
+comments/v1/dup/<authorContentHash>/<bucket>.m per-author duplicate guard (1 minute)
+comments/v1/mail/rl/<emailHash>/<ts>.marker    one mail per address per 10 minutes
+comments/v1/mail/last.json                     last mail attempt, surfaced by /api/health
 ```
 
-- 页面路径只存 hash，不把 URL 拼进对象键
-- IP 只存 `sha256(IP_SALT:ip)` 前 16 位，不落原始地址
-- 网关不支持条件写（`If-None-Match` 被忽略），所以全程只做 PUT / DELETE，不做「读-改-写」
+- Page paths are hashed; the URL never appears in an object key
+- IPs are stored only as `sha256(IP_SALT:ip)[0..16]` — no raw addresses
+- The gateway ignores conditional writes (`If-None-Match`), so the service only does PUT and DELETE, never read-modify-write
 
-## 环境变量
+## Deployment
 
-在 EdgeOne Pages 控制台 → 项目 → 设置 → 环境变量里填写；本地开发复制 `.env.example` 为 `.env`。
+1. Create a **private** bucket and an access key limited to `COMMENT_PREFIX` (list/get/put/delete + `ListBucket` on that prefix).
+2. Push this repository to GitHub and import it in EdgeOne Pages: output directory `public`, functions directory `functions`.
+3. Add the environment variables above, attach your custom domain (e.g. `comments.example.com`), and create the DNS record the console shows.
+4. Open `/api/health`: `ok: true` and `s3Ready: true` means credentials, bucket, endpoint and `UA_PREFIX` all work.
+5. Optionally verify a sending domain in Resend and set the `MAIL_*` variables.
 
-| 变量 | 必填 | 说明 |
-| --- | --- | --- |
-| `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | 是 | 建议单独建一把，只授权该桶的 `COMMENT_PREFIX` |
-| `S3_BUCKET` | 是 | 专用桶，保持私有 |
-| `S3_ENDPOINT` | 是 | 仅主机名，不带协议，如 `xxx.s3.cn-north-1.amazonaws.com.cn` |
-| `S3_REGION` | 否 | 默认 `cn-north-1` |
-| `UA_PREFIX` | 是 | AccessKey 绑定的应用名，网关按 User-Agent 校验 |
-| `COMMENT_PREFIX` | 否 | 默认 `comments/v1` |
-| `IP_SALT` | 建议 | 生成 IP 哈希；更换等于清空限流状态 |
-| `COMMENT_ORIGINS` | 建议 | 允许发评论的来源，逗号分隔，如 `https://blog.zhiyuanzhou.top` |
-| `COMMENT_TOKEN` | 建议 | 管理员删除令牌；不配则删除接口关闭 |
-| `COMMENT_PAGE_SIZE` | 否 | 默认 20，上限 50 |
-| `COMMENT_RATE_MAX` | 否 | 每 IP 10 分钟发帖上限，默认 5 |
-| `MAIL_PROVIDER` | 否 | 目前支持 `resend`；留空或 `off` 关闭邮件 |
-| `MAIL_API_KEY` | 邮件必填 | Resend API Key |
-| `MAIL_FROM` | 邮件必填 | 已验签的发件地址 |
-| `MAIL_TO` | 邮件必填 | 站长收件地址（`/api/health` 里显示为 `***@domain`） |
-| `MAIL_REPLY_TO` | 否 | 回复邮件时使用的地址 |
-| `SITE_URL` / `SITE_NAME` | 否 | 邮件里的站点链接和署名 |
+Pushing to GitHub does **not** deploy. Each change needs a deploy from the EdgeOne console (or your configured CI).
 
-Edge Functions 没有 TCP，发不了 SMTP，所以邮件走 HTTP 接口；要换供应商在 `functions/_shared/mail.ts` 的 `sendMail` 加一个分支即可。
-
-## 部署
-
-1. 建一个**私有**桶，再建 AccessKey，只授权 `COMMENT_PREFIX` 前缀（读写删、ListBucket）。
-2. 推送到 GitHub，在 EdgeOne Pages 新建项目导入本仓库：输出目录 `public`，函数目录 `functions`。
-3. 填环境变量，绑定自定义域名（如 `comments.zhiyuanzhou.top`）并配好 DNS。
-4. 打开 `/api/health`：`ok: true`、`s3Ready: true` 才算通。`UA_PREFIX` 填错时这里会直接报 401/403。
-5. 邮件还需要在 Resend 侧验证发件域名并配好 SPF/DKIM。
-
-## 防刷
-
-- 蜜罐字段 `nickname2` + 最短填写时间 2 秒
-- 每 IP 10 分钟最多 5 条（只存哈希）
-- 同页面同内容 1 分钟内视为重复（跨分钟边界也检查）
-- 来源白名单，非白名单站点连 CORS 头都拿不到
-- 邮件：同一收件邮箱 10 分钟最多一封
-
-## 本地开发
+## Local development
 
 ```bash
-cp .env.example .env   # 填好值，别提交
-npm run dev            # http://localhost:8788
-npm test               # 内存版 S3 网关 + 桩邮件，不需要任何凭据
+cp .env.example .env   # fill in real values; .env is gitignored
+npm run dev            # http://localhost:8788 (override with PORT=)
+npm test               # 80 tests, in-memory S3 gateway + stub mailer, no credentials needed
 ```
 
-博客本地联调时把评论接口指过来：
+`npm run dev` reads `.env`, serves `public/` statically, and loads the function with Node 22+ type stripping, so edits need a restart only if you change imports.
+
+To point the blog's dev server at it:
 
 ```bash
 VITE_COMMENTS_API=http://localhost:8788 pnpm docs:dev
 ```
 
-## 安全约定
+## Anti-spam
 
-- 凭据只从环境变量读取，不写死、不打日志、不出现在 `/api/health`
-- `.env`、`*.pem`、`*.key` 等已在 `.gitignore` 中
-- 评论对象里含邮箱，桶必须私有，不要开公共读
-- 删除接口只认 `COMMENT_TOKEN` 常量时间比较；没配令牌时直接关闭
+- Honeypot field `nickname2` + minimum 2-second form fill time
+- Per-IP limit: 5 comments / 10 minutes (hashed only)
+- Duplicate guard: same author + same page + same content within 1 minute is rejected (checks both sides of the minute boundary)
+- Origin allowlist; non-allowed sites don't even get CORS headers
+- Mail throttle: one message per recipient address per 10 minutes
+
+## Troubleshooting
+
+`/api/health` is the first stop:
+
+- `missing` lists variable **names** that are absent or look like placeholders
+- `s3Ready: false` with `S3 401/403` → wrong key, or `UA_PREFIX` doesn't match the app the key is bound to
+- `s3Ready: false` with `S3 404` → wrong `S3_BUCKET` or `S3_ENDPOINT`
+- `mail.last` explains the last notification decision; `enabled: false` means `MAIL_PROVIDER` or one of `MAIL_API_KEY`/`MAIL_FROM`/`MAIL_TO` is missing
+- `warnings` covers soft issues (no `IP_SALT`, empty `COMMENT_ORIGINS`, invalid prefix fallback)
+
+The status page at `/?token=…` shows the same data as a card layout.
+
+## Security notes
+
+- Credentials come only from environment variables; never committed, never logged, never returned by `/api/health`
+- `.env`, `*.pem`, `*.key`, `secrets.conf` are gitignored; `.env.example` lists names only
+- Comment objects contain emails — the bucket must stay private
+- The delete endpoint and status page use the same `COMMENT_TOKEN`, compared in constant time; both are closed when it is unset
+- Rotate `MAIL_API_KEY` and the S3 secret if either ever appears in a screenshot or log
