@@ -358,6 +358,29 @@ section('replying to your own comment');
   );
 }
 
+section('duplicate guard is per author');
+{
+  const same = { p: '/posts/dup-authors/', content: '收到', t0: t0() };
+
+  const first = await call('POST', '/api/comment', {
+    body: commentBody({ ...same, name: 'A', email: 'a@blog.test' }),
+    ip: '198.51.100.91',
+  });
+  eq(first.status, 201, 'first author may post');
+
+  const repeat = await call('POST', '/api/comment', {
+    body: commentBody({ ...same, name: 'A', email: 'a@blog.test' }),
+    ip: '198.51.100.92',
+  });
+  eq(repeat.status, 409, 'the same author repeating it within a minute is rejected');
+
+  const other = await call('POST', '/api/comment', {
+    body: commentBody({ ...same, name: 'B', email: 'b@blog.test' }),
+    ip: '198.51.100.93',
+  });
+  eq(other.status, 201, 'a different author may say the same thing');
+}
+
 section('notification does not hold the comment');
 {
   const delivered = mails.length;

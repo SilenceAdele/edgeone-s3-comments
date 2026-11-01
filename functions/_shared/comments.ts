@@ -6,7 +6,7 @@
  *
  *   <prefix>/pages/<pageHash>/<id>.json     one immutable comment per object
  *   <prefix>/rl/<ipHash>/<ts>.marker        per-IP posting rate limit
- *   <prefix>/dup/<contentHash>/<bucket>.m   duplicate-content guard
+ *   <prefix>/dup/<authorContentHash>/<bucket>.m  per-author duplicate guard
  *
  * The gateway does not support conditional writes, so nothing is ever read,
  * modified and written back: a comment is a single PUT, a delete is a DELETE.
@@ -227,16 +227,29 @@ export async function markRate(cfg: CommentStoreConfig, ipHash: string, now: num
   await s3PutEmpty(cfg.s3, `${cfg.prefix}/rl/${ipHash}/${String(now).padStart(13, '0')}.marker`);
 }
 
-const dupKey = async (cfg: CommentStoreConfig, page: string, content: string) =>
-  `${cfg.prefix}/dup/${(await sha256Hex(`${page}\n${content.trim().toLowerCase()}`)).slice(0, 32)}`;
+/**
+ * Who the duplicate guard counts as the author. Keying on the address lets two
+ * readers write the same short acknowledgement without the second one being
+ * turned away as a resubmit.
+ */
+export function duplicateAuthor(email: string, name: string): string {
+  const address = (email || '').trim().toLowerCase();
+  return address || `name:${(name || '').trim().toLowerCase()}`;
+}
+
+const dupKey = async (cfg: CommentStoreConfig, page: string, content: string, author: string) =>
+  `${cfg.prefix}/dup/${(
+    await sha256Hex(`${author}\n${page}\n${content.trim().toLowerCase()}`)
+  ).slice(0, 32)}`;
 
 export async function checkDuplicate(
   cfg: CommentStoreConfig,
   page: string,
   content: string,
+  author: string,
   now: number,
 ): Promise<boolean> {
-  const base = await dupKey(cfg, page, content);
+  const base = await dupKey(cfg, page, content, author);
   const bucket = Math.floor(now / 60_000);
   // The previous minute is checked too: a resubmit that straddles the boundary
   // would otherwise land in a fresh bucket and slip through. Both probes run at
@@ -252,9 +265,10 @@ export async function markDuplicate(
   cfg: CommentStoreConfig,
   page: string,
   content: string,
+  author: string,
   now: number,
 ): Promise<void> {
-  const base = await dupKey(cfg, page, content);
+  const base = await dupKey(cfg, page, content, author);
   await s3PutEmpty(cfg.s3, `${base}/${Math.floor(now / 60_000)}.marker`);
 }
 

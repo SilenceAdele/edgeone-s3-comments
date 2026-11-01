@@ -20,6 +20,7 @@ import {
   countComments,
   createComment,
   deleteComment,
+  duplicateAuthor,
   getComment,
   ipHashOf,
   listComments,
@@ -148,9 +149,10 @@ async function handleCreate(
   }
 
   const ipHash = await ipHashOf(cfg.ipSalt, clientIp(ctx));
+  const author = duplicateAuthor(input.email, input.name);
   const [rateOk, duplicate] = await Promise.all([
     checkRate(cfg, ipHash, now),
-    checkDuplicate(cfg, input.page, input.content, now),
+    checkDuplicate(cfg, input.page, input.content, author, now),
   ]);
   if (!rateOk) {
     return json({ error: '评论太频繁，请稍后再试' }, 429, cors);
@@ -184,7 +186,7 @@ async function handleCreate(
 
   await Promise.all([
     markRate(cfg, ipHash, now),
-    markDuplicate(cfg, input.page, input.content, now),
+    markDuplicate(cfg, input.page, input.content, author, now),
   ]);
 
   if (cfg.mail) {

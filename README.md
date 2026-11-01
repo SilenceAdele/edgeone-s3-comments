@@ -40,7 +40,7 @@
 ```text
 comments/v1/pages/<pageHash>/<id>.json      评论本体（含邮箱，桶必须私有）
 comments/v1/rl/<ipHash>/<ts>.marker         每 IP 发帖限流
-comments/v1/dup/<contentHash>/<minute>.marker 一分钟内重复内容
+comments/v1/dup/<authorContentHash>/<minute>.marker 同一人一分钟内重复内容
 comments/v1/mail/rl/<emailHash>/<ts>.marker 同一邮箱 10 分钟内只发一封
 ```
 
