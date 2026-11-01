@@ -36,6 +36,8 @@ import {
   maskEmail,
   notifyNewComment,
   readMailConfig,
+  readMailNotice,
+  recordMailNotice,
   unsubscribeToken,
   type MailConfig,
 } from './_shared/mail.ts';
@@ -184,11 +186,16 @@ async function handleCreate(
   ]);
 
   if (cfg.mail) {
-    const job = notifyNewComment({ mail: cfg.mail, store: cfg, comment: record, parent }).catch(
-      () => {},
-    );
-    if (ctx.waitUntil) ctx.waitUntil(job);
-    else await job;
+    // Awaited rather than handed to `waitUntil`: the platform may freeze the
+    // isolate as soon as the response is sent, which would silently drop the
+    // only outbound email.
+    const notice = await notifyNewComment({
+      mail: cfg.mail,
+      store: cfg,
+      comment: record,
+      parent,
+    });
+    await recordMailNotice(cfg, { ...notice, at: new Date(now).toISOString() }).catch(() => {});
   }
 
   const created: PublicReply = {
@@ -369,6 +376,8 @@ async function healthPayload(cfg: ServiceConfig) {
           from: cfg.mail.from,
           // Never echo the owner address: this endpoint is public.
           owner: maskEmail(cfg.mail.to),
+          // Skip reasons are status strings only — no address, no key.
+          last: await readMailNotice(cfg).catch(() => null),
         }
       : { enabled: false },
     deleteEndpoint: !!cfg.token,

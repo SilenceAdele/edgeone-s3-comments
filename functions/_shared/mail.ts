@@ -151,7 +151,9 @@ async function sendViaResend(cfg: MailConfig, msg: OutgoingMail): Promise<void> 
       text: msg.text,
       ...(cfg.replyTo ? { reply_to: cfg.replyTo } : {}),
     }),
-    signal: AbortSignal.timeout(10_000),
+    // The comment request now waits on this call, so the budget has to stay
+    // well under the platform's own request timeout even with two sends.
+    signal: AbortSignal.timeout(5_000),
   });
 
   if (!res.ok) {
@@ -330,6 +332,24 @@ export async function notifyNewComment(opts: {
   }
 
   return { ownerSent, replySent, skipped };
+}
+
+/**
+ * The notification outcome is otherwise invisible from the outside: a failed
+ * send must not fail the comment request, so nothing surfaces it. Keeping the
+ * last one in S3 lets `/api/health` answer "did we even try, and what said no".
+ */
+export async function recordMailNotice(
+  store: CommentStoreConfig,
+  notice: NotifyResult & { at: string },
+): Promise<void> {
+  await s3PutJson(store.s3, `${store.prefix}/mail/last.json`, notice);
+}
+
+export async function readMailNotice(
+  store: CommentStoreConfig,
+): Promise<(NotifyResult & { at: string }) | null> {
+  return s3GetJson<NotifyResult & { at: string }>(store.s3, `${store.prefix}/mail/last.json`);
 }
 
 /** Owner address is never exposed verbatim on a public health endpoint. */
