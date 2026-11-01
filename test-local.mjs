@@ -229,6 +229,34 @@ section('config surface');
   ok(/40[13]/.test(gated.json.s3Error || ''), 'probe reports the status it got back');
 }
 
+section('status page');
+{
+  const anonymous = await call('GET', '/');
+  eq(anonymous.status, 401, 'the status page asks for the token');
+  ok(!anonymous.text.includes('blog@blog.test'), 'the refusal shows no service details');
+  ok(anonymous.text.includes('name="token"'), 'the refusal offers a token field');
+  ok(anonymous.text.includes('type="password"'), 'the token field is masked');
+
+  const wrong = await call('GET', '/?token=nope');
+  eq(wrong.status, 401, 'a wrong token is refused');
+  ok(wrong.text.includes('令牌不正确'), 'a wrong token says so');
+  ok(!wrong.text.includes('nope'), 'the refusal never echoes the attempt');
+
+  const viaQuery = await call('GET', '/?token=admin-token');
+  eq(viaQuery.status, 200, 'the token may come in the query for a browser');
+  ok(viaQuery.text.includes('edgeone-s3-comments'), 'the page renders the service name');
+  ok(viaQuery.text.includes('***@blog.test'), 'the owner address stays masked');
+  ok(!viaQuery.text.includes('owner@blog.test'), 'the page never prints the owner address');
+  ok(!viaQuery.text.includes('admin-token'), 'the page never echoes the token');
+
+  const viaHeader = await call('GET', '/', { headers: { 'x-comment-token': 'admin-token' } });
+  eq(viaHeader.status, 200, 'the header opens it too');
+
+  const closed = await call('GET', '/', { env: { ...ENV, COMMENT_TOKEN: '' } });
+  eq(closed.status, 404, 'without COMMENT_TOKEN the page stays hidden');
+  ok(!closed.text.includes('name="token"'), 'the disabled page offers no token field');
+}
+
 section('input guards');
 {
   const badOrigin = await call('POST', '/api/comment', {

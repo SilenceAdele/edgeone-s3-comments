@@ -15,6 +15,7 @@
 | `GET /api/count?p=/posts/foo/` | 评论总数 | |
 | `POST /api/comment` | 发评论 / 回复 | `text/plain` 或 JSON 或表单皆可，见下 |
 | `DELETE /api/comment?p=&id=` | 管理员删除 | 需要 `x-comment-token` 头或 `?token=`，连带删除该评论的直接回复 |
+| `GET /?token=` | 状态页 | 和删除接口用同一个 `COMMENT_TOKEN`；未配置时整页返回 404 |
 | `GET /api/health` | 配置自检 | 只返回变量名与状态，站长邮箱打码 |
 
 `POST /api/comment` 字段：

@@ -7,6 +7,7 @@
  *   GET    /api/count?p=/posts/foo/      comment count              -> 200
  *   POST   /api/comment                  post a comment or reply    -> 201
  *   DELETE /api/comment?p=&id=           admin delete (token)       -> 200
+ *   GET    /?token=                      status page (token)        -> 200
  *   GET    /api/health                   config sanity check        -> 200
  *
  * All credentials come from environment variables. Nothing is hardcoded and
@@ -39,6 +40,7 @@ import {
   type MailConfig,
 } from './_shared/mail.ts';
 import { readS3Config, s3Request, type S3Config } from './_shared/s3.ts';
+import { statusGatePage, statusNoticePage, statusPage } from './_shared/status-page.ts';
 
 /** EdgeOne Edge Function context (hand-written to avoid a type dependency). */
 interface FnContext {
@@ -91,8 +93,13 @@ async function handle(ctx: FnContext): Promise<Response> {
 
   if (method === 'OPTIONS') return new Response(null, { status: 204, headers: cors });
 
-  if (path === '/' || path === '/api/health') {
+  if (path === '/api/health') {
     return json(await healthPayload(cfg), 200, { ...cors, 'cache-control': 'no-store' });
+  }
+
+  if (path === '/') {
+    if (method !== 'GET' && method !== 'HEAD') return methodNotAllowed(cors);
+    return handleStatusPage(ctx, cfg, url);
   }
 
   if (cfg.missing.length) {
@@ -287,6 +294,44 @@ async function handleDelete(
   } catch (e) {
     return fail(e, cors);
   }
+}
+
+/**
+ * The status page shows what /api/health returns, so it takes the admin token
+ * too. A browser cannot set a header while navigating, hence the query
+ * parameter; the referrer policy keeps the token out of any link the page makes.
+ */
+async function handleStatusPage(
+  ctx: FnContext,
+  cfg: ServiceConfig,
+  url: URL,
+): Promise<Response> {
+  const headers = {
+    'content-type': 'text/html; charset=utf-8',
+    'cache-control': 'no-store',
+    'referrer-policy': 'no-referrer',
+    'x-robots-tag': 'noindex, nofollow',
+  };
+
+  if (!cfg.token) {
+    return new Response(
+      statusNoticePage('管理页未启用', '服务端没有配置 COMMENT_TOKEN，状态页保持关闭。'),
+      { status: 404, headers },
+    );
+  }
+
+  const provided = ctx.request.headers.get('x-comment-token') || url.searchParams.get('token') || '';
+  if (!safeEqual(provided, cfg.token)) {
+    return new Response(
+      statusGatePage({
+        message: '输入管理员令牌后查看服务状态。',
+        error: provided ? '令牌不正确，请重试。' : '',
+      }),
+      { status: 401, headers },
+    );
+  }
+
+  return new Response(statusPage(await healthPayload(cfg)), { status: 200, headers });
 }
 
 // ================= config =================
