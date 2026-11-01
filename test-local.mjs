@@ -106,12 +106,19 @@ const xmlEscape = (s) =>
 
 const gateway = new FakeGateway();
 const mails = [];
+// Set to a promise to freeze the provider mid-send: `mails` only grows once the
+// send is allowed to finish, so a test can tell "attempted" from "delivered".
+let mailHold = null;
+const mailAttempts = [];
 
 const realFetch = globalThis.fetch;
 globalThis.fetch = async (input, init = {}) => {
   const url = new URL(typeof input === 'string' ? input : input.url);
   if (url.hostname === 'api.resend.com') {
-    mails.push(JSON.parse(init.body));
+    const payload = JSON.parse(init.body);
+    mailAttempts.push(payload);
+    if (mailHold) await mailHold;
+    mails.push(payload);
     return new Response(JSON.stringify({ id: `mail_${mails.length}` }), { status: 200 });
   }
   if (url.hostname === GATEWAY) return gateway.handle(url, init);
@@ -324,6 +331,79 @@ section('email notifications');
   eq(third.status, 201, 'third comment accepted');
   eq(mails.length, before + 1, 'only the owner mail is sent after opt-out');
   eq(mails[mails.length - 1].to[0], 'owner@blog.test', 'the skipped one was the reader mail');
+}
+
+section('replying to your own comment');
+{
+  const before = mails.length;
+  const ip = '198.51.100.88';
+  const thread = await call('POST', '/api/comment', {
+    body: commentBody({
+      p: '/posts/self-reply/',
+      name: 'Self',
+      email: 'self@blog.test',
+      content: 'Ask a question, answer it myself.',
+      t0: t0(),
+    }),
+    ip,
+  });
+  eq(thread.status, 201, 'self-thread comment accepted');
+
+  const selfReply = await call('POST', '/api/comment', {
+    body: commentBody({
+      p: '/posts/self-reply/',
+      name: 'Self',
+      email: 'self@blog.test',
+      content: 'And here is the follow-up.',
+      parentId: thread.json.comment.id,
+      t0: t0(),
+    }),
+    ip,
+  });
+  eq(selfReply.status, 201, 'reply from the same address accepted');
+
+  const added = mails.slice(before);
+  eq(added.length, 3, 'owner hears about both and the author hears about the reply');
+  ok(
+    added.some((m) => m.to[0] === 'self@blog.test'),
+    'the same-address reply still notifies the author',
+  );
+}
+
+section('notification does not hold the comment');
+{
+  const delivered = mails.length;
+  let release;
+  mailHold = new Promise((resolve) => (release = resolve));
+
+  const jobs = [];
+  const startedAt = Date.now();
+  const response = await onRequest({
+    request: new Request('https://comments.test/api/comment', {
+      method: 'POST',
+      headers: {
+        origin: 'https://blog.test',
+        'content-type': 'text/plain',
+        'x-forwarded-for': '198.51.100.77',
+      },
+      body: JSON.stringify(
+        commentBody({ p: '/posts/notify-timing/', content: 'Provider is frozen mid-send', t0: t0() }),
+      ),
+    }),
+    params: {},
+    env: ENV,
+    waitUntil: (job) => jobs.push(job),
+  });
+  const elapsed = Date.now() - startedAt;
+
+  eq(response.status, 201, 'comment accepted while the provider never answers');
+  ok(elapsed < 5_000, `response stayed inside the head-start budget (${elapsed}ms)`);
+  eq(mails.length, delivered, 'nothing counted as delivered during the freeze');
+
+  release();
+  await Promise.allSettled(jobs);
+  ok(mails.length > delivered, 'the frozen send still goes out after the response');
+  mailHold = null;
 }
 
 section('rate limit');

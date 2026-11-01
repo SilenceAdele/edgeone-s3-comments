@@ -348,36 +348,42 @@ export async function notifyNewComment(opts: {
   let ownerSent = false;
   let replySent = false;
 
-  try {
-    await sendMail(mail, ownerMail(mail, comment, parent));
-    ownerSent = true;
-  } catch (e) {
-    skipped.push(`owner: ${(e as Error).message}`);
-  }
-
-  if (!parent) return { ownerSent, replySent, skipped };
-
-  const parentEmail = (parent.email || '').trim();
-  if (!parentEmail) skipped.push('reply: parent left no email');
-  else if (!parent.notify) skipped.push('reply: parent opted out of replies');
-  else if (parent.email.toLowerCase() === (comment.email || '').toLowerCase()) {
-    skipped.push('reply: same author');
-  } else {
-    const hash = await emailHash(parentEmail);
+  // Both sends start at once: every bucket round-trip here costs seconds from
+  // the edge, and a reply would otherwise pay for the owner send up front.
+  const owner = (async () => {
     try {
-      if (await isOptedOut(store, hash)) skipped.push('reply: unsubscribed');
-      else if (!(await mailRateOk(store, hash, now))) skipped.push('reply: rate limited');
-      else {
-        const token = await unsubscribeToken(mail, hash);
-        await sendMail(mail, replyMail(mail, comment, parent, hash, token));
-        await markMailRate(store, hash, now);
-        replySent = true;
-      }
+      await sendMail(mail, ownerMail(mail, comment, parent));
+      ownerSent = true;
     } catch (e) {
-      skipped.push(`reply: ${(e as Error).message}`);
+      skipped.push(`owner: ${(e as Error).message}`);
     }
-  }
+  })();
 
+  const reply = (async () => {
+    if (!parent) return;
+    const parentEmail = (parent.email || '').trim();
+    if (!parentEmail) skipped.push('reply: parent left no email');
+    else if (!parent.notify) skipped.push('reply: parent opted out of replies');
+    else {
+      // No same-author exemption: someone following their own thread still
+      // wants the ping, and the per-address window below caps the noise.
+      const hash = await emailHash(parentEmail);
+      try {
+        if (await isOptedOut(store, hash)) skipped.push('reply: unsubscribed');
+        else if (!(await mailRateOk(store, hash, now))) skipped.push('reply: rate limited');
+        else {
+          const token = await unsubscribeToken(mail, hash);
+          await sendMail(mail, replyMail(mail, comment, parent, hash, token));
+          await markMailRate(store, hash, now);
+          replySent = true;
+        }
+      } catch (e) {
+        skipped.push(`reply: ${(e as Error).message}`);
+      }
+    }
+  })();
+
+  await Promise.all([owner, reply]);
   return { ownerSent, replySent, skipped };
 }
 

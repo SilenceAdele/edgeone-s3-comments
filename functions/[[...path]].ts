@@ -60,6 +60,13 @@ const RATE_WINDOW_MS = 10 * 60_000;
 const DEFAULT_PAGE_SIZE = 20;
 const MAX_PAGE_SIZE = 50;
 
+/** How long the response waits for the notification before letting it run on. */
+const MAIL_HEAD_START_MS = 4_000;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 interface ServiceConfig extends CommentStoreConfig {
   origins: string[];
   token: string;
@@ -150,10 +157,14 @@ async function handleCreate(
   }
 
   const ipHash = await ipHashOf(cfg.ipSalt, clientIp(ctx));
-  if (!(await checkRate(cfg, ipHash, now))) {
+  const [rateOk, duplicate] = await Promise.all([
+    checkRate(cfg, ipHash, now),
+    checkDuplicate(cfg, input.page, input.content, now),
+  ]);
+  if (!rateOk) {
     return json({ error: '评论太频繁，请稍后再试' }, 429, cors);
   }
-  if (await checkDuplicate(cfg, input.page, input.content, now)) {
+  if (duplicate) {
     return json({ error: '请勿重复提交相同内容' }, 409, cors);
   }
 
@@ -186,16 +197,23 @@ async function handleCreate(
   ]);
 
   if (cfg.mail) {
-    // Awaited rather than handed to `waitUntil`: the platform may freeze the
-    // isolate as soon as the response is sent, which would silently drop the
-    // only outbound email.
-    const notice = await notifyNewComment({
+    // The comment is already stored, so the reader must not wait on two
+    // outbound sends: their bucket round-trips pushed a reply past the
+    // platform's request budget and the browser hung with no response at all.
+    // The notification gets a short head start inside the request and is then
+    // handed to the platform to finish.
+    const at = new Date(now).toISOString();
+    const notice = notifyNewComment({
       mail: cfg.mail,
       store: cfg,
       comment: record,
       parent,
-    });
-    await recordMailNotice(cfg, { ...notice, at: new Date(now).toISOString() }).catch(() => {});
+    })
+      .then((result) => recordMailNotice(cfg, { ...result, at }))
+      .catch(() => {});
+
+    await Promise.race([notice, sleep(MAIL_HEAD_START_MS)]);
+    ctx.waitUntil?.(notice);
   }
 
   const created: PublicReply = {

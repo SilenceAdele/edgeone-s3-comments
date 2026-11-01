@@ -239,11 +239,13 @@ export async function checkDuplicate(
   const base = await dupKey(cfg, page, content);
   const bucket = Math.floor(now / 60_000);
   // The previous minute is checked too: a resubmit that straddles the boundary
-  // would otherwise land in a fresh bucket and slip through.
-  for (const b of [bucket, bucket - 1]) {
-    if (await s3Exists(cfg.s3, `${base}/${b}.marker`)) return true;
-  }
-  return false;
+  // would otherwise land in a fresh bucket and slip through. Both probes run at
+  // once — each bucket round-trip costs seconds from the edge.
+  const hits = await Promise.all([
+    s3Exists(cfg.s3, `${base}/${bucket}.marker`),
+    s3Exists(cfg.s3, `${base}/${bucket - 1}.marker`),
+  ]);
+  return hits[0] || hits[1];
 }
 
 export async function markDuplicate(
