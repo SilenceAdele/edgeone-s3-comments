@@ -296,7 +296,8 @@ section('email notifications');
   eq(mails[mailBase + 1].to[0], 'owner@blog.test', 'owner is notified of a reply');
   eq(mails[mailBase + 2].to[0], 'reader@blog.test', 'author of the answered comment is notified');
   ok(mails[mailBase + 2].text.includes('Glad you liked it.'), 'reply mail carries the reply text');
-  ok(!mails[mailBase].text.includes('reader@blog.test'), 'owner mail does not leak addresses in the body');
+  ok(mails[mailBase].text.includes('reader@blog.test'), 'owner mail carries the commenter address');
+  ok(!mails[mailBase + 2].text.includes('owner@blog.test'), 'reply mail leaks no other address');
 
   const link = /https:\/\/comments\.test\/api\/unsubscribe\?e=([0-9a-f]+)&t=([0-9a-f]+)/.exec(
     mails[mailBase + 2].text,

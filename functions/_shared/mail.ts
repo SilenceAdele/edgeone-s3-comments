@@ -250,6 +250,9 @@ export function ownerMail(
     lines: [
       `文章：${comment.page}`,
       `昵称：${comment.name}`,
+      // The address is private data, but this notification only ever goes to
+      // the site owner, who needs it to reply or follow up.
+      ...(comment.email ? [`邮箱：${comment.email}`] : []),
       ...(comment.website ? [`网址：${comment.website}`] : []),
       ...(parent ? [`原评论（${parent.name}）：${parent.content}`] : []),
       `内容：${comment.content}`,
